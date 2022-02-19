@@ -11,6 +11,7 @@ import pathlib
 import shutil
 import re
 import logging
+import giturlparse
 from .app_deploy import AppDeploy
 
 # Annotation imports
@@ -35,8 +36,11 @@ class GitDeploy(AppDeploy):
                  ) -> None:
         super().__init__(config, cmd_helper, app_params)
         storage = self._load_storage()
+        # beyond this point, we're dealing with for-sure git URLs
+        origin_url = giturlparse.parse(self.origin)
+        moved_origin_url = giturlparse.parse(self.moved_origin)
         self.repo = GitRepo(cmd_helper, self.path, self.name,
-                            self.origin, self.moved_origin,
+                            origin_url, moved_origin_url,
                             storage)
         if self.type != 'git_repo':
             self.need_channel_update = True
@@ -209,8 +213,8 @@ class GitRepo:
                  cmd_helper: CommandHelper,
                  git_path: pathlib.Path,
                  alias: str,
-                 origin_url: str,
-                 moved_origin_url: Optional[str],
+                 origin_url: giturlparse.GitUrlParsed,
+                 moved_origin_url: Optional[giturlparse.GitUrlParsed],
                  storage: Dict[str, Any]
                  ) -> None:
         self.server = cmd_helper.get_server()
@@ -231,7 +235,7 @@ class GitRepo:
         self.upstream_version: str = storage.get('upstream_version', "?")
         self.current_commit: str = storage.get('current_commit', "?")
         self.upstream_commit: str = storage.get('upstream_commit', "?")
-        self.upstream_url: str = storage.get('upstream_url', "?")
+        self.upstream_url = giturlparse.parse(storage.get('upstream_url', "?"))
         self.full_version_string: str = storage.get('full_version_string', "?")
         self.branches: List[str] = storage.get('branches', [])
         self.dirty: bool = storage.get('dirty', False)
@@ -294,22 +298,17 @@ class GitRepo:
 
             # Fetch the upstream url.  If the repo has been moved,
             # set the new url
-            self.upstream_url = await self.remote(f"get-url {self.git_remote}")
-            if self.moved_origin_url is not None:
-                origin = self.upstream_url.lower().strip()
-                if not origin.endswith(".git"):
-                    origin += ".git"
-                moved_origin = self.moved_origin_url.lower().strip()
-                if not moved_origin.endswith(".git"):
-                    moved_origin += ".git"
-                if origin == moved_origin:
-                    logging.info(
-                        f"Git Repo {self.alias}: Moved Repo Detected, Moving "
-                        f"from {self.upstream_url} to {self.origin_url}")
-                    need_fetch = True
-                    await self.remote(
-                        f"set-url {self.git_remote} {self.origin_url}")
-                    self.upstream_url = self.origin_url
+            self.upstream_url = giturlparse.parse(await self.remote(f"get-url {self.git_remote}"))
+            if self.moved_origin_url is not None \
+                    and self.upstream_url.domain == self.moved_origin_url.domain \
+                    and self.upstream_url.repo == self.moved_origin_url.repo:
+                logging.info(
+                    f"Git Repo {self.alias}: Moved Repo Detected, Moving "
+                    f"from {self.upstream_url} to {self.origin_url}")
+                need_fetch = True
+                await self.remote(
+                    f"set-url {self.git_remote} {self.origin_url}")
+                self.upstream_url = self.origin_url
 
             if need_fetch:
                 await self.fetch()
@@ -349,17 +348,10 @@ class GitRepo:
                 else:
                     tag = None
 
-            # Parse GitHub Owner from URL
-            owner_match = re.match(r"https?://[^/]+/([^/]+)", self.upstream_url)
-            self.git_owner = "?"
-            if owner_match is not None:
-                self.git_owner = owner_match.group(1)
-
-            # Parse GitHub Repository Name from URL
-            repo_match = re.match(r".*\/([^\.]*).*", self.upstream_url)
-            self.git_repo_name = "?"
-            if repo_match is not None:
-                self.git_repo_name = repo_match.group(1)
+            # use the owner if we can find it
+            self.git_owner = str(getattr(self.upstream_url, 'owner', '?'))
+            if hasattr(self.upstream_url, 'repo'):
+                self.git_repo_name = str(getattr(self.upstream_url, 'repo'))
 
             # check if Repository is dirty
             self.dirty = current_version.endswith("dirty")
@@ -485,11 +477,6 @@ class GitRepo:
 
     def report_invalids(self, primary_branch: str) -> List[str]:
         invalids: List[str] = []
-        upstream_url = self.upstream_url.lower()
-        if upstream_url[-4:] != ".git":
-            upstream_url += ".git"
-        if upstream_url != self.origin_url.lower():
-            invalids.append(f"Unofficial remote url: {self.upstream_url}")
         if self.git_branch != primary_branch or self.git_remote != "origin":
             invalids.append(
                 "Repo not on valid remote branch, expected: "
