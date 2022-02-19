@@ -425,14 +425,14 @@ class GitRepo:
             await self._wait_for_lock_release()
             self.valid_git_repo = False
             retries = 3
+            resp: Optional[str] = None
             while retries:
                 self.git_messages.clear()
                 try:
-                    resp: Optional[str] = await self._run_git_cmd(
+                    resp = await self._run_git_cmd(
                         "status -u no", retries=1)
                 except Exception:
                     retries -= 1
-                    resp = None
                     # Attempt to recover from "loose object" error
                     if retries and GIT_OBJ_ERR in "\n".join(self.git_messages):
                         ret = await self._repair_loose_objects()
