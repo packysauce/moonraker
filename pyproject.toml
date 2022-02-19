@@ -21,6 +21,7 @@ python = "^3.8"
 streaming-form-data = "1.8.1"
 tornado = "6.1.0"
 zeroconf = "0.37.0"
+giturlparse = "^0.10.0"
 
 [tool.poetry.dev-dependencies]
 
